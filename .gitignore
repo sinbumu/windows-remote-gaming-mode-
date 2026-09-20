@@ -1,0 +1,16 @@
+# OS / editor
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+*.swp
+*~
+
+# Local runtime (lives in ProgramData after install; never commit)
+*.log
+state.json
+autologon.bin
+autologon-user.json
+watchdog.pid
+*.bak

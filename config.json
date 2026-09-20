@@ -1,0 +1,11 @@
+﻿{
+  "vddInstanceId": "ROOT\\DISPLAY\\0000",
+  "vddFriendlyName": "Virtual Display Driver",
+  "vddMonitorHardwareId": "DISPLAY\\MTT1337",
+  "physicalMonitorHardwareId": "DISPLAY\\SAM7058",
+  "physicalMonitorName": "LC32G7xT",
+  "sunshineService": "SunshineService",
+  "sunshineConf": "C:\\Program Files\\Sunshine\\config\\sunshine.conf",
+  "nicDescriptionPattern": "Realtek PCIe 2.5GbE",
+  "installDir": "C:\\ProgramData\\RemoteMode"
+}
