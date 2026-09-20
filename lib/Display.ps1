@@ -94,6 +94,20 @@ public static class RmDisplayNative {
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern int ChangeDisplaySettingsEx(string lpszDeviceName, IntPtr lpDevMode, IntPtr hwnd, uint dwflags, IntPtr lParam);
 
+    public const uint SDC_TOPOLOGY_EXTEND = 0x00000004;
+    public const uint SDC_APPLY = 0x00000080;
+    public const uint SDC_ALLOW_CHANGES = 0x00000400;
+
+    [DllImport("user32.dll")]
+    public static extern int SetDisplayConfig(uint numPathArrayElements, IntPtr pathArray, uint numModeInfoArrayElements, IntPtr modeInfoArray, uint flags);
+
+    public static string ApplyExtendTopology() {
+        int rc = SetDisplayConfig(0, IntPtr.Zero, 0, IntPtr.Zero, SDC_APPLY | SDC_TOPOLOGY_EXTEND);
+        if (rc == 0) return "ok";
+        rc = SetDisplayConfig(0, IntPtr.Zero, 0, IntPtr.Zero, SDC_APPLY | SDC_TOPOLOGY_EXTEND | SDC_ALLOW_CHANGES);
+        return rc == 0 ? "ok" : "SetDisplayConfig extend failed: " + rc;
+    }
+
     public static List<RmDisplayDeviceInfo> ListDisplays() {
         var result = new List<RmDisplayDeviceInfo>();
         uint i = 0;
@@ -102,7 +116,6 @@ public static class RmDisplayNative {
             adapter.cb = Marshal.SizeOf(adapter);
             if (!EnumDisplayDevices(null, i, ref adapter, 0)) break;
             i++;
-            if ((adapter.StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) == 0) continue;
 
             var mon = new DISPLAY_DEVICE();
             mon.cb = Marshal.SizeOf(mon);
@@ -129,7 +142,7 @@ public static class RmDisplayNative {
             info.MonitorName = monitorName;
             info.MonitorId = monitorId;
             info.AdapterPrimary = (adapter.StateFlags & DISPLAY_DEVICE_PRIMARY_DEVICE) != 0;
-            info.AdapterAttached = true;
+            info.AdapterAttached = (adapter.StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) != 0;
             info.PositionX = px;
             info.PositionY = py;
             info.Width = w;
@@ -170,6 +183,42 @@ public static class RmDisplayNative {
         if (apply != DISP_CHANGE_SUCCESSFUL) return "apply failed: " + apply;
         return "ok";
     }
+
+    public static string AttachAdapter(string adapterName, int x, int y) {
+        var mode = new DEVMODE();
+        mode.dmSize = (short)Marshal.SizeOf(mode);
+        if (!EnumDisplaySettings(adapterName, ENUM_CURRENT_SETTINGS, ref mode)) {
+            if (!EnumDisplaySettings(adapterName, -2, ref mode)) { // ENUM_REGISTRY_SETTINGS
+                if (!EnumDisplaySettings(adapterName, 0, ref mode)) {
+                    return "no mode for " + adapterName;
+                }
+            }
+        }
+        mode.dmPositionX = x;
+        mode.dmPositionY = y;
+        mode.dmFields = 0x00000020 | 0x00080000 | 0x00100000 | 0x00040000 | 0x00400000;
+        int rc = ChangeDisplaySettingsEx(adapterName, ref mode, IntPtr.Zero, CDS_UPDATEREGISTRY | CDS_NORESET, IntPtr.Zero);
+        if (rc != DISP_CHANGE_SUCCESSFUL) return "attach failed: " + rc;
+        int apply = ChangeDisplaySettingsEx(null, IntPtr.Zero, IntPtr.Zero, 0, IntPtr.Zero);
+        if (apply != DISP_CHANGE_SUCCESSFUL) return "apply failed: " + apply;
+        return "ok";
+    }
+
+    public static string SetAdapterMode(string adapterName, int width, int height) {
+        var mode = new DEVMODE();
+        mode.dmSize = (short)Marshal.SizeOf(mode);
+        if (!EnumDisplaySettings(adapterName, ENUM_CURRENT_SETTINGS, ref mode)) {
+            return "no current mode for " + adapterName;
+        }
+        mode.dmPelsWidth = width;
+        mode.dmPelsHeight = height;
+        mode.dmFields = 0x00080000 | 0x00100000;
+        int rc = ChangeDisplaySettingsEx(adapterName, ref mode, IntPtr.Zero, CDS_UPDATEREGISTRY | CDS_NORESET, IntPtr.Zero);
+        if (rc != DISP_CHANGE_SUCCESSFUL) return "mode failed: " + rc;
+        int apply = ChangeDisplaySettingsEx(null, IntPtr.Zero, IntPtr.Zero, 0, IntPtr.Zero);
+        if (apply != DISP_CHANGE_SUCCESSFUL) return "apply failed: " + apply;
+        return "ok";
+    }
 }
 '@
 }
@@ -177,12 +226,25 @@ public static class RmDisplayNative {
 function Get-RmDisplayList {
     Initialize-RmDisplayInterop
     $cfg = Get-RmConfig
-    $phys = $cfg.physicalMonitorHardwareId
-    $vdd = $cfg.vddMonitorHardwareId
+    $physId = $cfg.physicalMonitorHardwareId
+    $physName = $cfg.physicalMonitorName
+    $vddId = $cfg.vddMonitorHardwareId
     [RmDisplayNative]::ListDisplays() | ForEach-Object {
+        $id = [string]$_.MonitorId
+        $mon = [string]$_.MonitorName
+        $adp = [string]$_.AdapterString
         $kind = 'Other'
-        if ($_.MonitorId -like "*$($phys.Replace('\','*'))*" -or $_.MonitorId -match 'SAM7058') { $kind = 'Physical' }
-        elseif ($_.MonitorId -like "*$($vdd.Replace('\','*'))*" -or $_.MonitorId -match 'MTT1337') { $kind = 'Vdd' }
+        if ($id -match 'MTT1337' -or $mon -match 'VDD by MTT' -or $adp -match 'Virtual Display') {
+            $kind = 'Vdd'
+        }
+        elseif (
+            $id -match 'SAM7058' -or
+            $mon -match 'SAM7058' -or
+            ($physName -and $mon -like "*$physName*") -or
+            ($physId -and ($id -match [regex]::Escape(($physId -split '\\')[-1])))
+        ) {
+            $kind = 'Physical'
+        }
         [pscustomobject]@{
             Adapter    = $_.AdapterName
             AdapterStr = $_.AdapterString
@@ -190,6 +252,7 @@ function Get-RmDisplayList {
             MonitorId  = $_.MonitorId
             Kind       = $kind
             Primary    = $_.AdapterPrimary
+            Attached   = $_.AdapterAttached
             X          = $_.PositionX
             Y          = $_.PositionY
             Width      = $_.Width
@@ -214,16 +277,73 @@ function Test-RmPhysicalMonitorActive {
 }
 
 function Set-RmPhysicalPrimary {
+    Restore-RmDeskPrimary
+}
+
+function Get-RmDeskTarget {
+    param(
+        [string]$PreferredAdapter,
+        $List
+    )
+    $target = $List | Where-Object { $_.Kind -eq 'Physical' } | Select-Object -First 1
+    if (-not $target -and $PreferredAdapter) {
+        $target = $List | Where-Object { $_.Adapter -eq $PreferredAdapter -and $_.Kind -ne 'Vdd' } | Select-Object -First 1
+    }
+    $primary = $List | Where-Object Primary | Select-Object -First 1
+    if (-not $target -and $primary -and $primary.Kind -eq 'Vdd') {
+        $target = $List | Where-Object { $_.Kind -ne 'Vdd' } | Select-Object -First 1
+    }
+    [pscustomobject]@{ Target = $target; Primary = $primary; List = $List }
+}
+
+function Restore-RmDeskPrimary {
+    param([string]$PreferredAdapter)
     Initialize-RmDisplayInterop
-    $list = @(Get-RmDisplayList)
-    $phys = $list | Where-Object { $_.Kind -eq 'Physical' } | Select-Object -First 1
-    if (-not $phys) {
-        return 'physical-not-present'
+
+    $found = Get-RmDeskTarget -PreferredAdapter $PreferredAdapter -List @(Get-RmDisplayList | Where-Object Attached)
+    if (-not $found.Target) {
+        $cfg = Get-RmConfig
+        $pnpOk = @(Get-RmMonitorByHardwareId -HardwareId $cfg.physicalMonitorHardwareId | Where-Object { $_.Status -eq 'OK' })
+        $detached = @(Get-RmDisplayList | Where-Object { -not $_.Attached -and $_.Kind -eq 'Physical' } | Select-Object -First 1)
+        if ($pnpOk.Count -gt 0 -or $detached.Count -gt 0) {
+            $ext = [RmDisplayNative]::ApplyExtendTopology()
+            Write-RmLog ("물리 모니터는 연결되어 있는데 데스크톱에서 빠져 있습니다. 확장으로 복구: {0}" -f $ext)
+            foreach ($d in $detached) {
+                $att = [RmDisplayNative]::AttachAdapter($d.Adapter, 2560, 0)
+                Write-RmLog ("분리된 어댑터 재연결: {0} / {1} ({2})" -f $d.Adapter, $d.Monitor, $att)
+            }
+            Start-Sleep -Milliseconds 500
+            $found = Get-RmDeskTarget -PreferredAdapter $PreferredAdapter -List @(Get-RmDisplayList | Where-Object Attached)
+            if (-not $found.Target) {
+                $ds = Join-Path $env:SystemRoot 'System32\DisplaySwitch.exe'
+                if (Test-Path -LiteralPath $ds) {
+                    Start-Process -FilePath $ds -ArgumentList '/extend' -WindowStyle Hidden -Wait | Out-Null
+                    Write-RmLog 'DisplaySwitch /extend 로 다시 시도했습니다.'
+                    Start-Sleep -Milliseconds 800
+                    $found = Get-RmDeskTarget -PreferredAdapter $PreferredAdapter -List @(Get-RmDisplayList | Where-Object Attached)
+                }
+            }
+        }
     }
-    if ($phys.Primary) {
-        return 'already-primary'
+
+    $list = @($found.List)
+    $target = $found.Target
+    $primary = $found.Primary
+    if ($list.Count -eq 0) { return 'no-displays' }
+    if (-not $target) {
+        if ($primary -and $primary.Kind -ne 'Vdd') { return 'already-primary' }
+        return 'vdd-only'
     }
-    $rc = [RmDisplayNative]::SetPrimary($phys.Adapter)
-    Write-RmLog ("물리 모니터를 메인으로 전환: {0} ({1})" -f $phys.Monitor, $rc)
+
+    $rc = 'already-primary'
+    if (-not $target.Primary) {
+        $rc = [RmDisplayNative]::SetPrimary($target.Adapter)
+        Write-RmLog ("책상 모니터를 메인으로 유지: {0} / {1} ({2})" -f $target.Adapter, $target.Monitor, $rc)
+    }
+    $vdd = Get-RmDisplayList | Where-Object { $_.Kind -eq 'Vdd' -and $_.Attached } | Select-Object -First 1
+    if ($vdd -and $vdd.Width -gt 0 -and $vdd.Width -lt 1280) {
+        $vr = [RmDisplayNative]::SetAdapterMode($vdd.Adapter, 2560, 1440)
+        Write-RmLog ("VDD 해상도 복구 2560x1440: {0}" -f $vr)
+    }
     return $rc
 }

@@ -24,25 +24,37 @@ public static class Engine
 
         Add(Path.Combine(AppContext.BaseDirectory, "remote-mode.ps1"));
         Add(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "RemoteMode", "remote-mode.ps1"));
+        Add(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RemoteMode", "remote-mode.ps1"));
         Add(Path.Combine(Directory.GetCurrentDirectory(), "remote-mode.ps1"));
+
+        var github = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            "Documents", "GitHub");
+        if (Directory.Exists(github))
+        {
+            foreach (var d in Directory.GetDirectories(github))
+                Add(Path.Combine(d, "remote-mode.ps1"));
+        }
 
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         for (var i = 0; i < 8 && dir != null; i++, dir = dir.Parent)
             Add(Path.Combine(dir.FullName, "remote-mode.ps1"));
 
-        foreach (var p in names)
-        {
-            if (File.Exists(p)) return p;
-        }
+        var existing = names.Where(File.Exists).ToList();
+        if (existing.Count == 0)
+            throw new FileNotFoundException("remote-mode.ps1을 찾을 수 없습니다.");
 
-        throw new FileNotFoundException("remote-mode.ps1을 찾을 수 없습니다.");
+        // ProgramData 복사가 관리자 소유라 저장소 수정이 안 들어갈 수 있다. 더 새 스크립트를 쓴다.
+        return existing
+            .OrderByDescending(File.GetLastWriteTimeUtc)
+            .First();
     }
 
     public static LiveSnapshot ReadStatus()
     {
         var result = Run("status", extraArgs: "-Json", timeoutMs: 60_000);
         if (result.ExitCode != 0)
-            throw new InvalidOperationException(string.IsNullOrWhiteSpace(result.Error) ? result.Output : result.Error);
+            throw new InvalidOperationException("상태 조회 실패. 아래 로그를 확인하세요.");
 
         var json = ExtractJson(result.Output);
         var snap = JsonSerializer.Deserialize<LiveSnapshot>(json, new JsonSerializerOptions
@@ -118,7 +130,7 @@ public static class Engine
             if (t.StartsWith("{", StringComparison.Ordinal) && t.EndsWith("}", StringComparison.Ordinal))
                 return t;
         }
-        throw new InvalidOperationException("JSON 상태 줄을 찾지 못했습니다.\n" + raw);
+        throw new InvalidOperationException("상태 JSON을 읽지 못했습니다. 아래 로그를 확인하세요.");
     }
 }
 

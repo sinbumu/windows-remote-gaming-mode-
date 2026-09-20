@@ -19,4 +19,5 @@ watchdog.pid
 bin/
 obj/
 gui/dist/
+gui/dist-staging/
 

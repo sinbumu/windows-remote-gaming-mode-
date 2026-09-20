@@ -87,9 +87,9 @@ dotnet run --project .\gui\RemoteMode.Gui
 | **OFF** | 기록 `desired=off` 이고 VDD 꺼짐 + Sunshine 중지 |
 | **불일치** | 기록과 실상태가 다름. 표와 로그를 보면 됨 |
 
-- **Remote ON / OFF** — 적용. 진행 로그가 아래 로그창과 `C:\ProgramData\RemoteMode\remote-mode.log`에 동시에 남습니다
+- **Remote ON / OFF** — 적용. 진행 로그는 `C:\ProgramData\RemoteMode\remote-mode.log`에 남고 아래 로그창이 따라갑니다
 - **다시 확인** — 실상태만 재조회
-- **설치** — 위 `install`과 동일. 비밀번호가 없으면 GUI에서 물어봅니다
+- **설치 갱신** — Remote ON/OFF가 아님. 스크립트/부팅 스케줄/바로가기를 이 PC에 심거나, 이미 있으면 최신으로 다시 복사합니다
 
 ## 명령줄
 

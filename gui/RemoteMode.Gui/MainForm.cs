@@ -1,3 +1,5 @@
+using System.Text;
+
 namespace RemoteMode.Gui;
 
 public sealed class MainForm : Form
@@ -65,12 +67,15 @@ public sealed class MainForm : Form
         _refresh.Text = "다시 확인";
         _refresh.Size = new Size(140, 36);
         _refresh.Location = new Point(320, 318);
-        _install.Text = "설치";
-        _install.Size = new Size(100, 36);
+        _install.Text = "설치 갱신";
+        _install.Size = new Size(110, 36);
         _install.Location = new Point(470, 318);
         _busy.AutoSize = true;
         _busy.Location = new Point(590, 326);
         _busy.ForeColor = Color.DimGray;
+
+        var tip = new ToolTip();
+        tip.SetToolTip(_install, "스크립트·스케줄·바로가기를 이 PC에 심거나 최신으로 갱신합니다. Remote ON/OFF가 아닙니다.");
 
         var logLabel = new Label { Text = "로그", Location = new Point(20, 366), AutoSize = true };
         _log.Multiline = true;
@@ -89,7 +94,21 @@ public sealed class MainForm : Form
         _on.Click += async (_, _) => await RunActionAsync("on");
         _off.Click += async (_, _) => await RunActionAsync("off");
         _refresh.Click += async (_, _) => await RefreshAsync();
-        _install.Click += async (_, _) => await RunActionAsync("install");
+        _install.Click += async (_, _) =>
+        {
+            var ok = MessageBox.Show(
+                this,
+                "이 PC에 Remote Mode를 심거나, 이미 있으면 최신 파일로 갱신합니다.\n\n" +
+                "• 스크립트를 C:\\ProgramData\\RemoteMode 로 복사\n" +
+                "• 부팅/로그인 후 자동 복구 스케줄\n" +
+                "• 바탕화면 바로가기\n\n" +
+                "Remote ON/OFF와는 별개입니다. 계속할까요?",
+                "설치 갱신",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Information);
+            if (ok != DialogResult.Yes) return;
+            await RunActionAsync("install");
+        };
         Load += async (_, _) =>
         {
             LoadLogTail();
@@ -126,7 +145,7 @@ public sealed class MainForm : Form
         try
         {
             if (!File.Exists(Engine.LogPath)) return;
-            var lines = File.ReadAllLines(Engine.LogPath);
+            var lines = File.ReadAllLines(Engine.LogPath, Encoding.UTF8);
             var take = lines.Skip(Math.Max(0, lines.Length - 200));
             foreach (var line in take) _log.AppendText(line + Environment.NewLine);
             _logOffset = new FileInfo(Engine.LogPath).Length;
@@ -163,7 +182,7 @@ public sealed class MainForm : Form
             using var fs = new FileStream(Engine.LogPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
             if (fs.Length < _logOffset) _logOffset = 0;
             fs.Seek(_logOffset, SeekOrigin.Begin);
-            using var reader = new StreamReader(fs);
+            using var reader = new StreamReader(fs, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 1024, leaveOpen: true);
             var chunk = reader.ReadToEnd();
             _logOffset = fs.Position;
             if (string.IsNullOrEmpty(chunk)) return;
@@ -237,6 +256,26 @@ public sealed class MainForm : Form
             _grid.Rows.Add("재시작 대기", snap.PendingReboot, "없음");
     }
 
+    private static string SummarizeFail(EngineResult r)
+    {
+        var text = (r.Error + "\n" + r.Output);
+        if (text.Contains("스트림이 이미 닫혀", StringComparison.Ordinal) ||
+            text.Contains("stream was not readable", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("Cannot access a closed stream", StringComparison.OrdinalIgnoreCase))
+        {
+            return "로그 출력 중 스트림 오류가 났습니다. ON/OFF는 이미 적용됐을 수 있으니 상태를 다시 확인하세요.";
+        }
+
+        foreach (var line in text.Split('\n').Reverse())
+        {
+            var t = line.Trim();
+            if (t.Contains("[ERROR]", StringComparison.Ordinal) || t.StartsWith("throw", StringComparison.OrdinalIgnoreCase))
+                return t;
+        }
+
+        return "작업이 실패했습니다. 아래 로그를 확인하세요.";
+    }
+
     private async Task RunActionAsync(string action)
     {
         if (_working) return;
@@ -263,9 +302,9 @@ public sealed class MainForm : Form
                         var pw = dlg.Password;
                         await Task.Run(() =>
                         {
-                            var r = Engine.Run("set-password", extraArgs: "-PasswordFromStdin", stdin: pw, onLine: AppendLog);
+                            var r = Engine.Run("set-password", extraArgs: "-PasswordFromStdin", stdin: pw);
                             if (r.ExitCode != 0)
-                                throw new InvalidOperationException(r.Error.Length > 0 ? r.Error : r.Output);
+                                throw new InvalidOperationException(SummarizeFail(r));
                         });
                     }
                 }
@@ -273,20 +312,29 @@ public sealed class MainForm : Form
 
             await Task.Run(() =>
             {
-                var r = Engine.Run(action, onLine: AppendLog);
+                var r = Engine.Run(action);
                 if (r.ExitCode != 0)
-                    throw new InvalidOperationException(string.IsNullOrWhiteSpace(r.Error) ? r.Output : r.Error);
+                    throw new InvalidOperationException(SummarizeFail(r));
             });
 
             DrainLogFile();
             var snap = await Task.Run(() => Engine.ReadStatus());
             ApplySnapshot(snap);
             AppendLog("GUI: 조작 후 실상태 재확인 완료.");
+            if (action == "install")
+            {
+                MessageBox.Show(
+                    this,
+                    "파일과 스케줄을 갱신했습니다.\nRemote ON/OFF 상태는 그대로입니다.",
+                    "설치 갱신",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+            }
         }
         catch (Exception ex)
         {
-            AppendLog("[ERROR] " + ex.Message);
-            MessageBox.Show(this, ex.Message, "Remote Mode", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            DrainLogFile();
+            MessageBox.Show(this, ex.Message.Length > 400 ? ex.Message[..400] + "..." : ex.Message, "Remote Mode", MessageBoxButtons.OK, MessageBoxIcon.Error);
             try
             {
                 var snap = await Task.Run(() => Engine.ReadStatus());

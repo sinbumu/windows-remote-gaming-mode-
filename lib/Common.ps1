@@ -38,12 +38,45 @@ function Write-RmLog {
     )
     Initialize-RmDataDir
     $line = '{0} [{1}] {2}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Level, $Message
-    Add-Content -LiteralPath $script:RmLogPath -Value $line -Encoding UTF8
-    switch ($Level) {
-        'WARN' { Write-Host $line -ForegroundColor Yellow }
-        'ERROR' { Write-Host $line -ForegroundColor Red }
-        default { Write-Host $line }
+    $mutex = $null
+    try {
+        $mutex = New-Object System.Threading.Mutex($false, 'Global\RemoteModeLogFile')
+        [void]$mutex.WaitOne(2000)
+        $utf8 = New-Object System.Text.UTF8Encoding $false
+        $fs = [System.IO.File]::Open(
+            $script:RmLogPath,
+            [System.IO.FileMode]::Append,
+            [System.IO.FileAccess]::Write,
+            [System.IO.FileShare]::ReadWrite
+        )
+        try {
+            $sw = New-Object System.IO.StreamWriter($fs, $utf8)
+            $sw.WriteLine($line)
+            $sw.Flush()
+            $sw.Dispose()
+        }
+        catch {
+            try { $fs.Dispose() } catch { }
+            throw
+        }
     }
+    catch {
+        # Logging must never fail ON/OFF.
+    }
+    finally {
+        if ($mutex) {
+            try { $mutex.ReleaseMutex() | Out-Null } catch { }
+            $mutex.Dispose()
+        }
+    }
+    try {
+        switch ($Level) {
+            'WARN' { Write-Host $line -ForegroundColor Yellow }
+            'ERROR' { Write-Host $line -ForegroundColor Red }
+            default { Write-Host $line }
+        }
+    }
+    catch { }
     if ($script:RmLogCallback) {
         try { & $script:RmLogCallback $line $Level } catch { }
     }

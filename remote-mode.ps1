@@ -20,6 +20,11 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $script:RmToolRoot = $PSScriptRoot
+try {
+    [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
+    $OutputEncoding = [Console]::OutputEncoding
+}
+catch { }
 
 Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot 'lib') -Filter '*.ps1' | ForEach-Object {
     . $_.FullName
@@ -43,9 +48,13 @@ function Invoke-RmSelfElevate {
 }
 
 function Get-RmInstalledScript {
-    $installed = Join-Path $script:RmDataDir 'remote-mode.ps1'
-    if (Test-Path -LiteralPath $installed) { return $installed }
-    return (Join-Path $script:RmToolRoot 'remote-mode.ps1')
+    $cands = @(
+        (Join-Path $script:RmToolRoot 'remote-mode.ps1'),
+        (Join-Path $env:LOCALAPPDATA 'RemoteMode\remote-mode.ps1'),
+        (Join-Path $script:RmDataDir 'remote-mode.ps1')
+    ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | ForEach-Object { Get-Item -LiteralPath $_ }
+    if (-not $cands) { return (Join-Path $script:RmToolRoot 'remote-mode.ps1') }
+    return ($cands | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1).FullName
 }
 
 function Start-RmWatchProcess {
@@ -89,7 +98,9 @@ function Invoke-RmWatchTick {
     if ($vdd.Present -and -not $vdd.Enabled) {
         Write-RmLog 'watch: VDD가 꺼져 있어 다시 켭니다.' 'WARN'
         Enable-RmVdd
-        [void](Wait-RmVddReady -TimeoutSeconds 15)
+        [void](Restore-RmDeskPrimary)
+        [void](Wait-RmVddReady -TimeoutSeconds 5)
+        [void](Restore-RmDeskPrimary)
     }
 
     $sun = Get-RmSunshineStatus
@@ -98,11 +109,9 @@ function Invoke-RmWatchTick {
         Start-RmSunshine
     }
 
-    if (Test-RmPhysicalMonitorActive) {
-        $rc = Set-RmPhysicalPrimary
-        if ($rc -notin @('already-primary', 'physical-not-present', 'ok')) {
-            Write-RmLog ("watch: 메인 전환 결과 {0}" -f $rc) 'WARN'
-        }
+    $rc = Restore-RmDeskPrimary
+    if ($rc -notin @('already-primary', 'vdd-only', 'no-displays', 'ok')) {
+        Write-RmLog ("watch: 메인 전환 결과 {0}" -f $rc) 'WARN'
     }
 
     try { Enter-RmExecutionState } catch { }
@@ -163,13 +172,35 @@ function Invoke-RmApplyPayload {
     Enable-RmStayAwake
     Enable-RmUpdateHold
     Enable-RmAutologon
+
+    $preferred = $null
+    try {
+        $preferred = @(Get-RmDisplayList | Where-Object Primary | Select-Object -First 1).Adapter
+    }
+    catch { }
+
     Enable-RmVdd
-    [void](Wait-RmVddReady)
     if (-not $SkipDisplay) {
-        $rc = Set-RmPhysicalPrimary
-        Write-RmLog ("메인 디스플레이: {0}" -f $rc)
+        # VDD enable can steal primary immediately. Restore the desk monitor
+        # before any long wait so the user can still see the screen.
+        [void](Restore-RmDeskPrimary -PreferredAdapter $preferred)
+        for ($i = 0; $i -lt 10; $i++) {
+            Start-Sleep -Milliseconds 200
+            $rc = Restore-RmDeskPrimary -PreferredAdapter $preferred
+            if ($rc -in @('already-primary', 'ok')) { break }
+        }
+        $kind = Get-RmPrimaryKind
+        Write-RmLog ("메인 디스플레이: {0} / kind={1}" -f (Restore-RmDeskPrimary -PreferredAdapter $preferred), $kind)
+    }
+
+    [void](Wait-RmVddReady -TimeoutSeconds 8)
+    if (-not $SkipDisplay) {
+        [void](Restore-RmDeskPrimary -PreferredAdapter $preferred)
     }
     Start-RmSunshine
+    if (-not $SkipDisplay) {
+        [void](Restore-RmDeskPrimary -PreferredAdapter $preferred)
+    }
 }
 
 function Invoke-RmOn {
@@ -340,9 +371,9 @@ function Install-RmScheduledTasks {
         -Settings (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable)
     Register-ScheduledTask -TaskName 'RemoteMode-Logon' -InputObject $logon -Force | Out-Null
 
-    $pulseTrigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddMinutes(1))
-    $pulseTrigger.RepetitionInterval = (New-TimeSpan -Minutes 2)
-    $pulseTrigger.RepetitionDuration = (New-TimeSpan -Days 3650)
+    $pulseTrigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddMinutes(1)) `
+        -RepetitionInterval (New-TimeSpan -Minutes 2) `
+        -RepetitionDuration (New-TimeSpan -Days 3650)
     $pulse = New-ScheduledTask -Action (New-RmScheduledTaskAction 'watch -Once') `
         -Principal $hiUser `
         -Trigger $pulseTrigger `
@@ -420,6 +451,14 @@ function Install-RmShortcuts {
 function Invoke-RmInstall {
     Assert-RmAdmin
     Initialize-RmDataDir
+    $already = [bool](Get-ScheduledTask -TaskName 'RemoteMode-Boot' -ErrorAction SilentlyContinue)
+    if ($already) {
+        Write-RmLog '이미 설치되어 있습니다. 파일과 스케줄을 최신으로 갱신합니다.'
+    }
+    else {
+        Write-RmLog '이 PC에 Remote Mode를 설치합니다. (부팅 복구 스케줄/바로가기)'
+    }
+
     $libDst = Join-Path $script:RmDataDir 'lib'
     New-Item -ItemType Directory -Path $libDst -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $script:RmToolRoot 'remote-mode.ps1') -Destination $script:RmDataDir -Force
@@ -440,7 +479,12 @@ function Invoke-RmInstall {
 
     Install-RmScheduledTasks
     Install-RmShortcuts
-    Write-RmLog '설치 완료. 바탕화면 Remote Mode GUI 또는 Remote ON / OFF 를 사용하세요.'
+    if ($already) {
+        Write-RmLog '설치 갱신 완료. Remote ON/OFF 상태는 그대로입니다.'
+    }
+    else {
+        Write-RmLog '설치 완료. 바탕화면 Remote Mode GUI 또는 Remote ON / OFF 를 사용하세요.'
+    }
 }
 
 function Invoke-RmUninstall {
