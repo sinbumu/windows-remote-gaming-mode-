@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <AssemblyName>RemoteMode</AssemblyName>
+    <RootNamespace>RemoteMode.Gui</RootNamespace>
+    <ApplicationTitle>Remote Mode</ApplicationTitle>
+    <InvariantGlobalization>false</InvariantGlobalization>
+  </PropertyGroup>
+
+  <Target Name="CopyEngine" AfterTargets="Build;Publish">
+    <PropertyGroup>
+      <EngineRoot>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)\..\..'))</EngineRoot>
+      <EngineDest Condition="'$(PublishDir)' != '' and Exists('$(PublishDir)')">$(PublishDir)</EngineDest>
+      <EngineDest Condition="'$(EngineDest)' == ''">$(OutDir)</EngineDest>
+    </PropertyGroup>
+    <ItemGroup>
+      <RmRootFiles Include="$(EngineRoot)\remote-mode.ps1;$(EngineRoot)\config.json" />
+      <RmLibFiles Include="$(EngineRoot)\lib\*.ps1" />
+    </ItemGroup>
+    <Copy SourceFiles="@(RmRootFiles)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(RmLibFiles)" DestinationFolder="$(OutDir)lib" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(RmRootFiles)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" Condition="'$(PublishDir)' != ''" />
+    <Copy SourceFiles="@(RmLibFiles)" DestinationFolder="$(PublishDir)lib" SkipUnchangedFiles="true" Condition="'$(PublishDir)' != ''" />
+  </Target>
+</Project>

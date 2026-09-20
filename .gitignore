@@ -14,3 +14,9 @@ autologon.bin
 autologon-user.json
 watchdog.pid
 *.bak
+
+# .NET
+bin/
+obj/
+gui/dist/
+

@@ -10,10 +10,12 @@
 #>
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('on', 'off', 'status', 'doctor', 'install', 'uninstall', 'watch', 'apply-boot', 'gui')]
+    [ValidateSet('on', 'off', 'status', 'doctor', 'install', 'uninstall', 'watch', 'apply-boot', 'gui', 'set-password')]
     [string]$Action = 'status',
     [switch]$FromLogon,
-    [switch]$Once
+    [switch]$Once,
+    [switch]$Json,
+    [switch]$PasswordFromStdin
 )
 
 $ErrorActionPreference = 'Stop'
@@ -24,7 +26,7 @@ Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot 'lib') -Filter '*.ps1' | For
 }
 
 function Invoke-RmSelfElevate {
-    $need = $Action -in @('on', 'off', 'install', 'uninstall', 'watch', 'apply-boot', 'gui')
+    $need = $Action -in @('on', 'off', 'install', 'uninstall', 'watch', 'apply-boot', 'gui', 'set-password')
     if (-not $need -or (Test-RmAdmin)) { return }
     $argList = @(
         '-NoProfile',
@@ -223,6 +225,68 @@ function Write-RmStatus {
     Get-RmLiveSnapshot
 }
 
+function Write-RmStatusJson {
+    $s = Get-RmLiveSnapshot
+    $checked = $null
+    if ($s.CheckedAt) {
+        try { $checked = ([datetime]$s.CheckedAt).ToString('o') } catch { $checked = [string]$s.CheckedAt }
+    }
+    $obj = [ordered]@{
+        Mode            = [string]$s.Mode
+        Desired         = [string]$s.Desired
+        PayloadOn       = [bool]$s.PayloadOn
+        Tailscale       = [string]$s.Tailscale
+        TailscaleStart  = [string]$s.TailscaleStart
+        VddEnabled      = [bool]$s.VddEnabled
+        VddStatus       = [string]$s.VddStatus
+        Sunshine        = [string]$s.Sunshine
+        SunshineStart   = [string]$s.SunshineStart
+        AutologonArmed  = [bool]$s.AutologonArmed
+        AutologonSecret = [bool]$s.AutologonSecret
+        PrimaryKind     = [string]$s.PrimaryKind
+        PhysicalActive  = [bool]$s.PhysicalActive
+        Watchdog        = [bool]$s.Watchdog
+        PendingReboot   = [string]$s.PendingReboot
+        LastOn          = [string]$s.LastOn
+        LastOff         = [string]$s.LastOff
+        Issues          = @($s.Issues)
+        PhysicalMonitor = [string]$s.PhysicalMonitor
+        VddInstanceId   = [string]$s.VddInstanceId
+        CheckedAt       = $checked
+    }
+    [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
+    [Console]::Out.WriteLine(($obj | ConvertTo-Json -Compress -Depth 5))
+}
+
+function Read-RmPasswordFromStdin {
+    $plain = [Console]::In.ReadLine()
+    if ([string]::IsNullOrWhiteSpace($plain)) {
+        throw 'stdin 비밀번호가 비어 있습니다.'
+    }
+    ConvertTo-SecureString $plain -AsPlainText -Force
+}
+
+function Invoke-RmSetPassword {
+    Assert-RmAdmin
+    Save-RmAutologonSecret -Password (Read-RmPasswordFromStdin)
+}
+
+function Get-RmBuiltGuiExe {
+    $root = Get-RmToolRoot
+    @(
+        (Join-Path $root 'gui\dist\RemoteMode.exe'),
+        (Join-Path $root 'gui\RemoteMode.Gui\bin\Release\net8.0-windows\win-x64\publish\RemoteMode.exe'),
+        (Join-Path $root 'gui\RemoteMode.Gui\bin\Debug\net8.0-windows\RemoteMode.exe')
+    ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+}
+
+function Get-RmGuiExeCandidates {
+    @(
+        (Join-Path $script:RmDataDir 'RemoteMode.exe'),
+        (Get-RmBuiltGuiExe)
+    ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
+}
+
 function Invoke-RmDoctor {
     Write-Host '=== Remote Mode doctor ===' -ForegroundColor Cyan
     $s = Write-RmStatus
@@ -311,17 +375,31 @@ function Install-RmShortcuts {
     $desktop = [Environment]::GetFolderPath('Desktop')
     $w = New-Object -ComObject WScript.Shell
 
-    $guiSrc = Join-Path $script:RmDataDir 'remote-mode-gui.ps1'
-    $guiLnk = Join-Path $desktop 'Remote Mode.lnk'
-    $sc = $w.CreateShortcut($guiLnk)
-    $sc.TargetPath = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
-    $sc.Arguments = "-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$guiSrc`""
-    $sc.WorkingDirectory = $script:RmDataDir
-    $sc.WindowStyle = 1
-    $sc.Description = 'Remote Mode GUI (Administrator)'
-    $sc.Save()
-    Set-RmShortcutRunAsAdmin $guiLnk
-    Write-RmLog "바로가기: $guiLnk"
+    $exe = $null
+    $built = Get-RmBuiltGuiExe
+    $destExe = Join-Path $script:RmDataDir 'RemoteMode.exe'
+    if ($built) {
+        Copy-Item -LiteralPath $built -Destination $destExe -Force
+        $exe = $destExe
+        Write-RmLog "GUI 복사: $built -> $destExe"
+    }
+    elseif (Test-Path -LiteralPath $destExe) {
+        $exe = $destExe
+    }
+    if ($exe) {
+        $guiLnk = Join-Path $desktop 'Remote Mode.lnk'
+        $sc = $w.CreateShortcut($guiLnk)
+        $sc.TargetPath = $destExe
+        $sc.WorkingDirectory = $script:RmDataDir
+        $sc.WindowStyle = 1
+        $sc.Description = 'Remote Mode GUI (Administrator)'
+        $sc.Save()
+        Set-RmShortcutRunAsAdmin $guiLnk
+        Write-RmLog "바로가기: $guiLnk -> $destExe"
+    }
+    else {
+        Write-RmLog 'RemoteMode.exe가 없어 GUI 바로가기를 건너뜁니다. gui 폴더에서 dotnet publish 후 install을 다시 실행하세요.' 'WARN'
+    }
 
     foreach ($pair in @(
             @{ Name = 'Remote ON.lnk'; Task = 'RemoteMode-On' },
@@ -345,7 +423,6 @@ function Invoke-RmInstall {
     $libDst = Join-Path $script:RmDataDir 'lib'
     New-Item -ItemType Directory -Path $libDst -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $script:RmToolRoot 'remote-mode.ps1') -Destination $script:RmDataDir -Force
-    Copy-Item -LiteralPath (Join-Path $script:RmToolRoot 'remote-mode-gui.ps1') -Destination $script:RmDataDir -Force
     Copy-Item -LiteralPath (Join-Path $script:RmToolRoot 'config.json') -Destination $script:RmDataDir -Force
     Copy-Item -Path (Join-Path $script:RmToolRoot 'lib\*.ps1') -Destination $libDst -Force
     Write-RmLog "파일을 $script:RmDataDir 에 복사했습니다."
@@ -353,7 +430,12 @@ function Invoke-RmInstall {
     Backup-RmSunshinePrep
 
     if (-not (Test-RmAutologonSecret)) {
-        Save-RmAutologonSecret
+        if ($PasswordFromStdin) {
+            Save-RmAutologonSecret -Password (Read-RmPasswordFromStdin)
+        }
+        else {
+            Save-RmAutologonSecret
+        }
     }
 
     Install-RmScheduledTasks
@@ -379,22 +461,9 @@ function Invoke-RmUninstall {
 }
 
 function Invoke-RmLaunchGui {
-    $candidates = @(
-        (Join-Path $script:RmToolRoot 'remote-mode-gui.ps1'),
-        (Join-Path $script:RmDataDir 'remote-mode-gui.ps1')
-    )
-    $gui = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-    if (-not $gui) { throw 'remote-mode-gui.ps1을 찾을 수 없습니다.' }
-    $argList = @(
-        '-NoProfile',
-        '-STA',
-        '-WindowStyle', 'Hidden',
-        '-ExecutionPolicy', 'Bypass',
-        '-File', $gui
-    )
-    $verb = @{}
-    if (-not (Test-RmAdmin)) { $verb = @{ Verb = 'RunAs' } }
-    Start-Process -FilePath 'powershell.exe' -ArgumentList $argList @verb | Out-Null
+    $exe = Get-RmGuiExeCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    if (-not $exe) { throw 'RemoteMode.exe를 찾을 수 없습니다. gui 프로젝트에서 dotnet publish 하세요.' }
+    Start-Process -FilePath $exe | Out-Null
 }
 
 if ($MyInvocation.InvocationName -ne '.') {
@@ -403,13 +472,17 @@ if ($MyInvocation.InvocationName -ne '.') {
         switch ($Action) {
             'on' { Invoke-RmOn }
             'off' { Invoke-RmOff }
-            'status' { Write-RmStatus | Format-List | Out-Host }
+            'status' {
+                if ($Json) { Write-RmStatusJson }
+                else { Write-RmStatus | Format-List | Out-Host }
+            }
             'doctor' { Invoke-RmDoctor }
             'install' { Invoke-RmInstall }
             'uninstall' { Invoke-RmUninstall }
             'watch' { Invoke-RmWatch }
             'apply-boot' { Invoke-RmApplyBoot }
             'gui' { Invoke-RmLaunchGui }
+            'set-password' { Invoke-RmSetPassword }
         }
     }
     catch {

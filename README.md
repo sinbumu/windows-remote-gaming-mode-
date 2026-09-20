@@ -51,7 +51,7 @@ powershell -ExecutionPolicy Bypass -File .\remote-mode.ps1 install
 
 - 파일을 `C:\ProgramData\RemoteMode\`로 복사
 - 부팅/로그온/2분 주기 스케줄 작업 등록
-- 바탕화면 바로가기: **Remote Mode**(GUI), **Remote ON**, **Remote OFF**
+- 바탕화면 바로가기: **Remote Mode**(WinForms GUI exe), **Remote ON**, **Remote OFF**
 - Sunshine `global_prep_cmd`의 `displayswitch.exe` 제거 (백업: `sunshine.conf.remotemode.bak`). 데스크탑+VDD에서 메인을 엉뚱한 화면으로 고정하던 설정이라 OFF 때도 되돌리지 않습니다
 - 자동 로그인용 Windows 비밀번호 1회 입력 (DPAPI로 `C:\ProgramData\RemoteMode\autologon.bin`에 저장)
 
@@ -59,12 +59,26 @@ powershell -ExecutionPolicy Bypass -File .\remote-mode.ps1 install
 
 ## GUI
 
-관리자 UAC가 뜹니다. 창을 닫았다 열면 마지막 버튼이 아니라 **지금 장치/서비스 실상태**를 다시 읽습니다.
+.NET 8 WinForms 앱입니다. 관리자 UAC가 뜨고, 창을 닫았다 열면 마지막 버튼이 아니라 **지금 장치/서비스 실상태**를 다시 읽습니다.
+
+처음 한 번 빌드:
 
 ```powershell
-powershell -STA -ExecutionPolicy Bypass -File .\remote-mode-gui.ps1
+dotnet publish .\gui\RemoteMode.Gui\RemoteMode.Gui.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o .\gui\dist
+```
+
+실행:
+
+```powershell
+.\gui\dist\RemoteMode.exe
 # 또는
 .\remote-mode.ps1 gui
+```
+
+개발 중:
+
+```powershell
+dotnet run --project .\gui\RemoteMode.Gui
 ```
 
 | 표시 | 의미 |
@@ -83,10 +97,11 @@ powershell -STA -ExecutionPolicy Bypass -File .\remote-mode-gui.ps1
 .\remote-mode.ps1 on          # Remote 켜기
 .\remote-mode.ps1 off         # Remote 끄기 (명시적일 때만)
 .\remote-mode.ps1 status      # 실상태 요약
+.\remote-mode.ps1 status -Json
 .\remote-mode.ps1 doctor      # 디스플레이/전원/NIC까지 점검
 .\remote-mode.ps1 install
 .\remote-mode.ps1 uninstall   # 켜져 있으면 먼저 off, 스케줄·바로가기 제거
-.\remote-mode.ps1 gui
+.\remote-mode.ps1 gui         # RemoteMode.exe 실행
 ```
 
 내부용: `watch` (로그온/주기 watchdog), `apply-boot` (부팅 시 SYSTEM 재적용).
