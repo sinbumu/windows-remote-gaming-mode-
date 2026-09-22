@@ -79,3 +79,15 @@ function Wait-RmVddReady {
     Write-RmLog 'VDD 모니터(MTT1337)가 제한 시간 안에 준비되지 않았습니다.' 'WARN'
     return $false
 }
+
+function Wait-RmVddDisabled {
+    param([int]$TimeoutSeconds = 8)
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        $st = Get-RmVddStatus
+        $gdi = @(Get-RmDisplayList | Where-Object { $_.Kind -eq 'Vdd' -and $_.Attached })
+        if ((-not $st.Enabled) -and $gdi.Count -eq 0) { return $true }
+        Start-Sleep -Milliseconds 400
+    }
+    return $false
+}

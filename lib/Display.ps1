@@ -347,3 +347,54 @@ function Restore-RmDeskPrimary {
     }
     return $rc
 }
+
+function Reset-RmPhysicalMonitorOutput {
+    $cfg = Get-RmConfig
+    $mons = @(Get-RmMonitorByHardwareId -HardwareId $cfg.physicalMonitorHardwareId | Where-Object { $_.Status -eq 'OK' })
+    if ($mons.Count -eq 0) { return 'no-physical' }
+
+    foreach ($m in $mons) {
+        try {
+            Write-RmLog ("물리 모니터 출력을 잠시 끊습니다: {0}" -f $m.FriendlyName)
+            Disable-PnpDevice -InstanceId $m.InstanceId -Confirm:$false
+        }
+        catch {
+            Write-RmLog ("물리 모니터 끄기 실패: {0}" -f $_.Exception.Message) 'WARN'
+        }
+    }
+    Start-Sleep -Seconds 2
+    foreach ($m in $mons) {
+        try {
+            Enable-PnpDevice -InstanceId $m.InstanceId -Confirm:$false
+        }
+        catch {
+            Write-RmLog ("물리 모니터 켜기 실패: {0}" -f $_.Exception.Message) 'WARN'
+        }
+    }
+    Start-Sleep -Seconds 2
+    return 'ok'
+}
+
+function Complete-RmDeskAfterOff {
+    [void](Wait-RmVddDisabled -TimeoutSeconds 8)
+    Write-RmLog 'VDD를 끈 뒤 물리 모니터가 붙을 시간을 둡니다.'
+    Start-Sleep -Seconds 2
+
+    $reset = Reset-RmPhysicalMonitorOutput
+    if ($reset -eq 'no-physical') {
+        Write-RmLog '물리 모니터가 아직 감지되지 않습니다. 데스크톱 확장만 시도합니다.'
+    }
+
+    for ($i = 0; $i -lt 8; $i++) {
+        $rc = Restore-RmDeskPrimary
+        $p = Get-RmDisplayList |
+            Where-Object { $_.Kind -eq 'Physical' -and $_.Attached -and $_.Width -ge 1280 } |
+            Select-Object -First 1
+        if ($p) {
+            Write-RmLog ("물리 모니터 화면: {0} {1}x{2} ({3})" -f $p.Adapter, $p.Width, $p.Height, $rc)
+            return
+        }
+        Start-Sleep -Milliseconds 750
+    }
+    Write-RmLog '물리 모니터 화면이 아직 안 붙었습니다. 모니터 전원을 한 번 껐다 켜 보세요.' 'WARN'
+}

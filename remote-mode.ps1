@@ -224,10 +224,11 @@ function Invoke-RmOff {
     Save-RmState $state
     Stop-RmWatchProcess
     Stop-RmSunshine
-    Disable-RmVdd
     Disable-RmAutologon
     Disable-RmStayAwake
     Disable-RmUpdateHold
+    Disable-RmVdd
+    Complete-RmDeskAfterOff
     Write-RmLog 'Remote Mode OFF 완료.'
 }
 
